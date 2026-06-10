@@ -7,9 +7,9 @@ This is a separate plugin and repository. It does not include a default MAX tab.
 ## What it does
 
 - Adds configurable WebView tabs to the Telegram folder tab bar.
-- Adds a `Настройки WebView папок` entry under ExteraGram settings.
+- Adds a `Настройки WebView папок` entry in Telegram settings directly under the ExteraGram settings row.
 - Lets users create, edit and delete website folders.
-- Lets users move WebView folders and native Telegram folders left or right after the chat list has been opened once.
+- Lets users reorder WebView folders and native Telegram folders with the same drag list pattern used by Pill Stack.
 - Keeps WebView state cached while switching away, instead of reloading the page from scratch every time.
 - Sandboxes WebView permissions: camera, microphone, geolocation and file chooser requests are denied.
 - Allows only `http://` and `https://` navigation inside the embedded WebView.
@@ -33,4 +33,3 @@ The build script needs Android SDK `android.jar`. If it cannot auto-detect it, s
 ```bash
 ANDROID_JAR=/path/to/android.jar ./scripts/build_dex.sh
 ```
-

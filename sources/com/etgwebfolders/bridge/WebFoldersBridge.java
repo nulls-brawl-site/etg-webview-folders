@@ -447,6 +447,7 @@ public final class WebFoldersBridge {
     }
 
     private static String installFilterTab(Object dialogsActivity, Activity activity, View root, View filterTabs) {
+        restoreChromeIfWebInactive(root, filterTabs);
         if (areWebTabsInstalled(filterTabs) && isWrappedWebDelegate(filterTabs)) {
             hardenWebTabVisualState(root, filterTabs, activity);
             requestWebTabRebindIfMissing(root, filterTabs, activity);
@@ -461,6 +462,8 @@ public final class WebFoldersBridge {
                 }
                 activeFilterTabs = filterTabs;
                 activeDialogsActivity = dialogsActivity;
+            } else {
+                restoreChromeIfWebInactive(root, filterTabs);
             }
             return "tab: already installed tabs=" + getTabsCount(filterTabs)
                     + " class=" + filterTabs.getClass().getName();
@@ -513,6 +516,8 @@ public final class WebFoldersBridge {
                 }
                 activeFilterTabs = filterTabs;
                 activeDialogsActivity = dialogsActivity;
+            } else {
+                restoreChromeIfWebInactive(root, filterTabs);
             }
             notifyTabsChanged(filterTabs);
             hardenWebTabVisualState(root, filterTabs, activity);
@@ -1594,6 +1599,28 @@ public final class WebFoldersBridge {
         Object target = resolveDialogsActivity(dialogsActivity);
         View root = getFragmentView(target);
         hideOverlay(root, true);
+    }
+
+    public static void restoreChromeAndSystemBars() {
+        restoreTelegramChrome();
+        restoreSystemBars();
+    }
+
+    private static void restoreChromeIfWebInactive(View root, View filterTabs) {
+        try {
+            boolean overlayActive = root instanceof ViewGroup && ((ViewGroup) root).findViewWithTag(OVERLAY_TAG) != null;
+            boolean webSelected = filterTabs != null
+                    && isWebTabNamespace(getIntField(filterTabs, "selectedTabId", Integer.MIN_VALUE));
+            if (!overlayActive && !webSelected) {
+                activeFilterTabs = null;
+                activeOriginalDelegate = null;
+                activeDelegateType = null;
+                activeDialogsActivity = null;
+                restoreTelegramChrome();
+                restoreSystemBars();
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private static void hideOverlay(View root) {
@@ -3459,15 +3486,20 @@ public final class WebFoldersBridge {
     private static void restoreSystemBars() {
         try {
             View decor = systemBarsDecor;
+            android.view.Window window = systemBarsWindow;
             if (decor != null) {
                 decor.setOnSystemUiVisibilityChangeListener(null);
-                decor.setSystemUiVisibility(previousSystemUiVisibility);
+                final int restoredVisibility = previousSystemUiVisibility & ~IMMERSIVE_SYSTEM_UI_FLAGS;
+                decor.setSystemUiVisibility(restoredVisibility);
+                decor.postDelayed(() -> decor.setSystemUiVisibility(restoredVisibility), 40);
+                decor.postDelayed(() -> decor.setSystemUiVisibility(restoredVisibility), 180);
+                decor.postDelayed(() -> decor.setSystemUiVisibility(restoredVisibility), 520);
             }
-            android.view.Window window = systemBarsWindow;
             if (window != null && previousBarColorsSaved && Build.VERSION.SDK_INT >= 21) {
                 window.setStatusBarColor(previousStatusBarColor);
                 window.setNavigationBarColor(previousNavigationBarColor);
             }
+            showSystemBarsWithInsetsController(window);
         } catch (Throwable ignored) {
         } finally {
             systemBarsDecor = null;
@@ -3477,6 +3509,25 @@ public final class WebFoldersBridge {
             previousNavigationBarColor = 0;
             previousBarColorsSaved = false;
             systemBarsHidden = false;
+        }
+    }
+
+    private static void showSystemBarsWithInsetsController(android.view.Window window) {
+        if (window == null || Build.VERSION.SDK_INT < 30) {
+            return;
+        }
+        try {
+            Method getInsetsController = window.getClass().getMethod("getInsetsController");
+            Object controller = getInsetsController.invoke(window);
+            if (controller == null) {
+                return;
+            }
+            Class<?> typeClass = Class.forName("android.view.WindowInsets$Type");
+            Method systemBars = typeClass.getMethod("systemBars");
+            Object mask = systemBars.invoke(null);
+            Method show = controller.getClass().getMethod("show", int.class);
+            show.invoke(controller, mask);
+        } catch (Throwable ignored) {
         }
     }
 

@@ -8,7 +8,7 @@ from android_utils import run_on_ui_thread
 from base_plugin import AppEvent, BasePlugin, MethodHook
 from client_utils import PLUGINS_QUEUE, get_last_fragment, run_on_queue
 from file_utils import ensure_dir_exists, get_plugins_dir
-from java import jclass
+from java import dynamic_proxy, jclass
 from java.lang import ClassLoader
 from ui.settings import Divider, Header, Input, Text
 
@@ -16,16 +16,18 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
 
 ENTRY_CLASS = "com.etgwebfolders.bridge.WebFoldersBridge"
 DEFAULT_DEX_URL = "https://raw.githubusercontent.com/nulls-brawl-site/etg-webview-folders/master/build/etg-webview-folders-bridge.dex"
-DEFAULT_DEX_SHA256 = "4ddc5313023915b6dc2e16d33689b25d897e9f543a9bd428a88a89a96f99e51f"
+DEFAULT_DEX_SHA256 = "91c89d8603915618ab36dbe2e2de7416a68b54bb26feddd20957558743a06e35"
 MAIN_PREFS_ITEM_ID = 0x575646
+ORDER_ITEM_BASE_ID = 0x575700
 CONFIG_KEY = "webview_folders_config"
+ORDER_TITLE = "Порядок вкладок"
 
 
 class _AfterCreateView(MethodHook):
@@ -65,7 +67,7 @@ class _AfterMainPrefsFill(MethodHook):
         self.plugin = plugin
 
     def after_hooked_method(self, param):
-        self.plugin.inject_main_preferences_item(param)
+        self.plugin.inject_settings_item(param)
 
 
 class _BeforeMainPrefsClick(MethodHook):
@@ -73,8 +75,24 @@ class _BeforeMainPrefsClick(MethodHook):
         self.plugin = plugin
 
     def before_hooked_method(self, param):
-        if self.plugin.handle_main_preferences_click(param):
+        if self.plugin.handle_settings_click(param):
             param.setResult(None)
+
+
+class _AfterPluginSettingsCreateView(MethodHook):
+    def __init__(self, plugin):
+        self.plugin = plugin
+
+    def after_hooked_method(self, param):
+        self.plugin.enable_order_reorder(param.thisObject)
+
+
+class _AfterPluginSettingsFill(MethodHook):
+    def __init__(self, plugin):
+        self.plugin = plugin
+
+    def after_hooked_method(self, param):
+        self.plugin.inject_order_reorder_section(param)
 
 
 class WebViewFoldersPlugin(BasePlugin):
@@ -85,18 +103,25 @@ class WebViewFoldersPlugin(BasePlugin):
         self._bridge_hide = None
         self._bridge_configure = None
         self._bridge_snapshot = None
+        self._bridge_restore = None
         self._bridge_ready = False
         self._pending_fragments = []
         self._last_snapshot = {"tabs": []}
+        self._order_token_by_id = {}
+        self._reorder_callbacks = []
+        self._reorder_icon = None
         self._install_hooks()
         run_on_queue(self._load_bridge, PLUGINS_QUEUE)
 
     def on_plugin_unload(self):
         self._pending_fragments = []
+        self.restore_chrome()
 
     def on_app_event(self, event_type: AppEvent):
         if event_type == AppEvent.RESUME:
             self._schedule_current_fragment_install()
+        elif event_type in (AppEvent.PAUSE, AppEvent.STOP):
+            self.restore_chrome()
 
     def create_settings(self):
         config = self._config()
@@ -130,8 +155,8 @@ class WebViewFoldersPlugin(BasePlugin):
             Divider(),
             Header(text="Порядок вкладок"),
             Text(
-                text="Настроить порядок",
-                subtext="Можно двигать web-папки и родные папки Telegram",
+                text=ORDER_TITLE,
+                subtext="Перетаскивание как в Pill Stack",
                 icon="msg_list",
                 create_sub_fragment=lambda: self._create_order_settings(),
             ),
@@ -183,34 +208,20 @@ class WebViewFoldersPlugin(BasePlugin):
         ]
 
     def _create_order_settings(self):
-        snapshot = self._snapshot()
-        tabs = snapshot.get("tabs", [])
-        if not tabs:
-            return [
-                Header(text="Порядок"),
-                Text(text="Открой список чатов", subtext="После этого здесь появятся родные папки Telegram", icon="msg_info"),
-            ]
-        rows = [Header(text="Порядок")]
-        for item in tabs:
-            token = item.get("token", "")
-            title = item.get("title", token)
-            prefix = "WebView" if item.get("web") else "Telegram"
-            rows.append(Text(
-                text=title,
-                subtext=prefix,
-                icon="msg_language" if item.get("web") else "msg_folder",
-                create_sub_fragment=lambda item_token=token, item_title=title: [
-                    Header(text=item_title),
-                    Text(text="Левее", icon="material_ic_keyboard_arrow_left_black_24dp", on_click=lambda _v, t=item_token: self._move_token(t, -1)),
-                    Text(text="Правее", icon="material_ic_keyboard_arrow_right_black_24dp", on_click=lambda _v, t=item_token: self._move_token(t, 1)),
-                ],
-            ))
-        return rows
+        return [
+            Header(text=ORDER_TITLE),
+            Text(
+                text="Перетащи строки",
+                subtext="Если родных папок нет, открой список чатов и зайди сюда снова",
+                icon="msg_info",
+            ),
+        ]
 
     def _install_hooks(self):
         DialogsActivity = self._class_ref("org.telegram.ui.DialogsActivity")
         MainTabsActivity = self._class_ref("org.telegram.ui.MainTabsActivity")
-        MainPreferencesActivity = self._class_ref("com.exteragram.messenger.preferences.MainPreferencesActivity")
+        SettingsActivity = self._class_ref("org.telegram.ui.SettingsActivity")
+        PluginSettingsActivity = self._class_ref("com.exteragram.messenger.plugins.ui.PluginSettingsActivity")
         Context = self._class_ref("android.content.Context")
         ArrayList = self._class_ref("java.util.ArrayList")
         UniversalAdapter = self._class_ref("org.telegram.ui.Components.UniversalAdapter")
@@ -249,17 +260,27 @@ class WebViewFoldersPlugin(BasePlugin):
                     prepare_dialogs.setAccessible(True)
                     self.hook_method(prepare_dialogs, _AfterCreateView(self))
 
-            if MainPreferencesActivity is not None and ArrayList is not None and UniversalAdapter is not None:
-                fill_items = MainPreferencesActivity.getDeclaredMethod("fillItems", ArrayList, UniversalAdapter)
+            if SettingsActivity is not None and ArrayList is not None and UniversalAdapter is not None:
+                fill_items = SettingsActivity.getDeclaredMethod("fillItems", ArrayList, UniversalAdapter)
                 fill_items.setAccessible(True)
                 self.hook_method(fill_items, _AfterMainPrefsFill(self))
 
-            if MainPreferencesActivity is not None and UItem is not None and View is not None:
-                on_click = MainPreferencesActivity.getDeclaredMethod(
+            if SettingsActivity is not None and UItem is not None and View is not None:
+                on_click = SettingsActivity.getDeclaredMethod(
                     "onClick", UItem, View, Integer.TYPE, Float.TYPE, Float.TYPE
                 )
                 on_click.setAccessible(True)
                 self.hook_method(on_click, _BeforeMainPrefsClick(self))
+
+            if PluginSettingsActivity is not None and Context is not None:
+                settings_create_view = PluginSettingsActivity.getDeclaredMethod("createView", Context)
+                settings_create_view.setAccessible(True)
+                self.hook_method(settings_create_view, _AfterPluginSettingsCreateView(self))
+
+            if PluginSettingsActivity is not None and ArrayList is not None and UniversalAdapter is not None:
+                settings_fill = PluginSettingsActivity.getDeclaredMethod("fillItems", ArrayList, UniversalAdapter)
+                settings_fill.setAccessible(True)
+                self.hook_method(settings_fill, _AfterPluginSettingsFill(self))
         except Exception:
             return
 
@@ -286,6 +307,8 @@ class WebViewFoldersPlugin(BasePlugin):
             self._bridge_configure.setAccessible(True)
             self._bridge_snapshot = self._bridge.getDeclaredMethod("getTabsSnapshotJson")
             self._bridge_snapshot.setAccessible(True)
+            self._bridge_restore = self._bridge.getDeclaredMethod("restoreChromeAndSystemBars")
+            self._bridge_restore.setAccessible(True)
             self._bridge_ready = True
             self._sync_bridge_config(False)
             for fragment in list(self._pending_fragments):
@@ -324,26 +347,46 @@ class WebViewFoldersPlugin(BasePlugin):
             except Exception:
                 return
 
-    def inject_main_preferences_item(self, param):
+    def restore_chrome(self):
+        if self._bridge_ready and self._bridge_restore is not None:
+            try:
+                self._bridge_restore.invoke(None)
+            except Exception:
+                return
+
+    def inject_settings_item(self, param):
         try:
             items = param.args[0]
             if items is None or self._has_uitem_id(items, MAIN_PREFS_ITEM_ID):
                 return
-            UItem = self._class_ref("org.telegram.ui.Components.UItem")
-            RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
-            Integer = jclass("java.lang.Integer")
-            CharSequence = self._class_ref("java.lang.CharSequence")
-            icon_field = RDrawable.getDeclaredField("msg_language")
-            icon_field.setAccessible(True)
-            icon_id = icon_field.getInt(None)
-            as_button = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
-            item = as_button.invoke(None, MAIN_PREFS_ITEM_ID, icon_id, "Настройки WebView папок")
-            insert_at = self._find_insert_after_plugins(items)
+            item = self._create_settings_uitem()
+            if item is None:
+                return
+            insert_at = self._find_insert_under_extera_settings(items)
             items.add(insert_at, item)
         except Exception:
             return
 
-    def handle_main_preferences_click(self, param):
+    def _create_settings_uitem(self):
+        try:
+            SettingsFactory = self._class_ref("org.telegram.ui.SettingsActivity$SettingCell$Factory")
+            RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
+            Integer = jclass("java.lang.Integer")
+            CharSequence = self._class_ref("java.lang.CharSequence")
+            icon_id = self._drawable_id(RDrawable, "msg_language")
+            if SettingsFactory is not None and icon_id:
+                method = SettingsFactory.getDeclaredMethod(
+                    "of", Integer.TYPE, Integer.TYPE, Integer.TYPE, Integer.TYPE, CharSequence
+                )
+                method.setAccessible(True)
+                return method.invoke(None, MAIN_PREFS_ITEM_ID, -0x17cfd0, -0x17cfd0, icon_id, "Настройки WebView папок")
+            UItem = self._class_ref("org.telegram.ui.Components.UItem")
+            as_button = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
+            return as_button.invoke(None, MAIN_PREFS_ITEM_ID, icon_id, "Настройки WebView папок")
+        except Exception:
+            return None
+
+    def handle_settings_click(self, param):
         try:
             item = param.args[0]
             if item is None or int(item.id) != MAIN_PREFS_ITEM_ID:
@@ -359,6 +402,193 @@ class WebViewFoldersPlugin(BasePlugin):
             present = BaseFragment.getMethod("presentFragment", BaseFragment)
             present.invoke(param.thisObject, settings)
             return True
+        except Exception:
+            return False
+
+    def enable_order_reorder(self, settings_activity):
+        if not self._is_order_settings_activity(settings_activity):
+            return
+        try:
+            list_view = self._get_field(settings_activity, "listView")
+            if list_view is None:
+                return
+            list_view.allowReorder(True)
+            try:
+                list_view.setReorderHandleOnly(True)
+            except Exception:
+                pass
+            callback = self._make_reorder_callback()
+            if callback is not None:
+                self._reorder_callbacks.append(callback)
+                if len(self._reorder_callbacks) > 8:
+                    self._reorder_callbacks = self._reorder_callbacks[-8:]
+                list_view.listenReorder(callback)
+        except Exception:
+            return
+
+    def inject_order_reorder_section(self, param):
+        settings_activity = param.thisObject
+        if not self._is_order_settings_activity(settings_activity):
+            return
+        try:
+            items = param.args[0]
+            adapter = param.args[1]
+            if items is None or adapter is None:
+                return
+            order_items = self._order_items()
+            items.clear()
+            UItem = self._class_ref("org.telegram.ui.Components.UItem")
+            if UItem is None:
+                return
+            adapter.whiteSectionStart()
+            header = UItem.getMethod("asHeader", self._class_ref("java.lang.CharSequence")).invoke(None, ORDER_TITLE)
+            items.add(header)
+            if order_items:
+                adapter.reorderSectionStart()
+                self._order_token_by_id = {}
+                for index, order_item in enumerate(order_items):
+                    row_id = ORDER_ITEM_BASE_ID + index
+                    self._order_token_by_id[row_id] = order_item["token"]
+                    row = self._create_order_uitem(settings_activity, row_id, order_item)
+                    if row is not None:
+                        items.add(row)
+                adapter.reorderSectionEnd()
+                adapter.whiteSectionEnd()
+                items.add(UItem.getMethod("asShadow", self._class_ref("java.lang.CharSequence")).invoke(
+                    None, "Перетащи строки за значок справа. Родные папки появятся после открытия списка чатов."
+                ))
+            else:
+                info = self._create_basic_uitem(
+                    row_id=ORDER_ITEM_BASE_ID,
+                    icon_name="msg_info",
+                    title="Пока нечего двигать",
+                    subtext="Создай WebView папку или открой список чатов",
+                )
+                if info is not None:
+                    items.add(info)
+                adapter.whiteSectionEnd()
+        except Exception:
+            return
+
+    def _order_items(self):
+        config = self._config()
+        snapshot_by_token = {}
+        for item in self._snapshot().get("tabs", []):
+            token = item.get("token")
+            if token:
+                snapshot_by_token[token] = item
+        tab_by_key = {
+            tab.get("key"): tab
+            for tab in config.get("tabs", [])
+            if tab.get("key") and tab.get("enabled", True)
+        }
+        result = []
+        for token in self._full_order(config):
+            if token.startswith("web:"):
+                tab = tab_by_key.get(token[4:])
+                if not tab:
+                    continue
+                result.append({
+                    "token": token,
+                    "title": tab.get("title") or self._host_from_url(tab.get("url", "")),
+                    "subtext": tab.get("url", "WebView"),
+                    "icon": "msg_language",
+                })
+            else:
+                item = snapshot_by_token.get(token)
+                if not item:
+                    continue
+                result.append({
+                    "token": token,
+                    "title": item.get("title", token),
+                    "subtext": "Telegram",
+                    "icon": "msg_folder",
+                })
+        return result
+
+    def _create_order_uitem(self, fragment, row_id, order_item):
+        item = self._create_basic_uitem(
+            row_id=row_id,
+            icon_name=order_item.get("icon", "msg_folder"),
+            title=order_item.get("title", ""),
+            subtext=order_item.get("subtext", ""),
+        )
+        if item is None:
+            return None
+        self._set_field(item, "object", order_item.get("token", ""))
+        reorder_icon = self._get_reorder_icon(fragment)
+        if reorder_icon is not None:
+            self._set_field(item, "object2", reorder_icon)
+        try:
+            item.setReordering(True)
+        except Exception:
+            pass
+        return item
+
+    def _create_basic_uitem(self, row_id, icon_name, title, subtext=""):
+        try:
+            UItem = self._class_ref("org.telegram.ui.Components.UItem")
+            RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
+            Integer = jclass("java.lang.Integer")
+            CharSequence = self._class_ref("java.lang.CharSequence")
+            icon_id = self._drawable_id(RDrawable, icon_name)
+            if subtext:
+                method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence, CharSequence)
+                return method.invoke(None, row_id, icon_id, title, subtext)
+            method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
+            return method.invoke(None, row_id, icon_id, title)
+        except Exception:
+            return None
+
+    def _make_reorder_callback(self):
+        try:
+            try:
+                Callback2 = jclass("org.telegram.messenger.Utilities$Callback2")
+            except Exception:
+                Callback2 = self._class_ref("org.telegram.messenger.Utilities$Callback2")
+                if Callback2 is None:
+                    return None
+            plugin = self
+            BaseCallback = dynamic_proxy(Callback2)
+
+            class ReorderCallback(BaseCallback):
+                def run(self, _section_id, item_list):
+                    plugin._handle_order_reordered(item_list)
+
+            return ReorderCallback()
+        except Exception:
+            return None
+
+    def _handle_order_reordered(self, item_list):
+        try:
+            tokens = []
+            for i in range(item_list.size()):
+                item = item_list.get(i)
+                token = self._get_field(item, "object")
+                if token is None:
+                    token = self._order_token_by_id.get(int(item.id))
+                token = str(token) if token is not None else ""
+                if token and token not in tokens:
+                    tokens.append(token)
+            if not tokens:
+                return
+            config = self._config()
+            full_order = self._full_order(config)
+            for token in full_order:
+                if token not in tokens:
+                    tokens.append(token)
+            config["order"] = tokens
+            self._save_config(config, reload_settings=False)
+        except Exception:
+            return
+
+    def _is_order_settings_activity(self, settings_activity):
+        return self._is_our_plugin_settings_activity(settings_activity) and str(self._get_field(settings_activity, "customTitle") or "") == ORDER_TITLE
+
+    def _is_our_plugin_settings_activity(self, settings_activity):
+        try:
+            plugin = self._get_field(settings_activity, "plugin")
+            return plugin is not None and str(plugin.getId()) == __id__
         except Exception:
             return False
 
@@ -507,7 +737,7 @@ class WebViewFoldersPlugin(BasePlugin):
 
     def _full_order(self, config):
         snapshot_tokens = [item.get("token") for item in self._snapshot().get("tabs", []) if item.get("token")]
-        web_tokens = [f"web:{tab.get('key')}" for tab in config.get("tabs", []) if tab.get("key")]
+        web_tokens = [f"web:{tab.get('key')}" for tab in config.get("tabs", []) if tab.get("key") and tab.get("enabled", True)]
         available = []
         for token in snapshot_tokens + web_tokens:
             if token and token not in available:
@@ -549,14 +779,14 @@ class WebViewFoldersPlugin(BasePlugin):
             return False
         return False
 
-    def _find_insert_after_plugins(self, items):
+    def _find_insert_under_extera_settings(self, items):
         try:
             for i in range(items.size()):
-                if int(items.get(i).id) == 5:
+                if int(items.get(i).id) == -1:
                     return i + 1
         except Exception:
             pass
-        return min(5, items.size())
+        return min(1, items.size())
 
     def _plugin_model(self):
         try:
@@ -594,6 +824,59 @@ class WebViewFoldersPlugin(BasePlugin):
         except Exception:
             return None
         return None
+
+    def _drawable_id(self, drawable_class, name):
+        try:
+            field = drawable_class.getDeclaredField(name)
+            field.setAccessible(True)
+            return field.getInt(None)
+        except Exception:
+            return 0
+
+    def _get_reorder_icon(self, fragment):
+        if self._reorder_icon is not None:
+            return self._reorder_icon
+        try:
+            ContextCompat = self._class_ref("androidx.core.content.ContextCompat")
+            RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
+            context = fragment.getContext()
+            icon_id = self._drawable_id(RDrawable, "list_reorder")
+            if ContextCompat is not None and context is not None and icon_id:
+                self._reorder_icon = ContextCompat.getDrawable(context, icon_id)
+        except Exception:
+            self._reorder_icon = None
+        return self._reorder_icon
+
+    def _find_field(self, obj, name):
+        try:
+            cls = obj.getClass()
+            while cls is not None:
+                try:
+                    field = cls.getDeclaredField(name)
+                    field.setAccessible(True)
+                    return field
+                except Exception:
+                    cls = cls.getSuperclass()
+        except Exception:
+            return None
+        return None
+
+    def _get_field(self, obj, name):
+        try:
+            field = self._find_field(obj, name)
+            return field.get(obj) if field is not None else None
+        except Exception:
+            return None
+
+    def _set_field(self, obj, name, value):
+        try:
+            field = self._find_field(obj, name)
+            if field is not None:
+                field.set(obj, value)
+                return True
+        except Exception:
+            return False
+        return False
 
     def _make_read_only(self, path):
         try:
