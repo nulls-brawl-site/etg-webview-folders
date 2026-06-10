@@ -16,7 +16,7 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -101,6 +101,7 @@ class _AfterPluginSettingsCreateView(MethodHook):
         self.plugin = plugin
 
     def after_hooked_method(self, param):
+        self.plugin.refresh_settings_list(param.thisObject)
         self.plugin.enable_order_reorder(param.thisObject)
 
 
@@ -312,7 +313,6 @@ class WebViewFoldersPlugin(BasePlugin):
 
         if MainPreferencesActivity is not None and Context is not None:
             self._hook_declared(MainPreferencesActivity, "createView", _AfterSettingsViewReady(self), Context)
-            self._hook_declared(MainPreferencesActivity, "onResume", _AfterSettingsViewReady(self))
 
         if MainPreferencesActivity is not None and ArrayList is not None and UniversalAdapter is not None:
             self._hook_declared(MainPreferencesActivity, "fillItems", _AfterExteraPrefsFill(self), ArrayList, UniversalAdapter)
@@ -375,7 +375,7 @@ class WebViewFoldersPlugin(BasePlugin):
             status = self._bridge_install.invoke(None, fragment)
             if status is not None:
                 status = str(status)
-                if "failed" in status or "not resolved" in status:
+                if "failed" in status or ("not resolved" in status and "ChatActivity" not in status):
                     self._log(status)
         except Exception as e:
             self._log(f"install failed: {e}")
@@ -412,7 +412,9 @@ class WebViewFoldersPlugin(BasePlugin):
             adapter = self._get_field(list_view, "adapter") if list_view is not None else None
             if adapter is not None:
                 adapter.update(True)
-        except Exception:
+                self._log(f"settings list refreshed: {name}")
+        except Exception as e:
+            self._log(f"settings list refresh failed: {e}")
             return
 
     def restore_chrome(self):
@@ -430,10 +432,13 @@ class WebViewFoldersPlugin(BasePlugin):
                 return
             item = self._create_settings_uitem()
             if item is None:
+                self._log("main settings item create failed")
                 return
             insert_at = self._find_insert_under_extera_settings(items)
             items.add(insert_at, item)
-        except Exception:
+            self._log(f"main settings item injected at {insert_at}")
+        except Exception as e:
+            self._log(f"main settings item inject failed: {e}")
             return
 
     def inject_extera_settings_item(self, param):
@@ -443,9 +448,13 @@ class WebViewFoldersPlugin(BasePlugin):
                 return
             item = self._create_extera_settings_uitem(param.thisObject)
             if item is None:
+                self._log("extera settings item create failed")
                 return
-            items.add(self._find_insert_in_extera_preferences(items), item)
-        except Exception:
+            insert_at = self._find_insert_in_extera_preferences(items)
+            items.add(insert_at, item)
+            self._log(f"extera settings item injected at {insert_at}")
+        except Exception as e:
+            self._log(f"extera settings item inject failed: {e}")
             return
 
     def _create_settings_uitem(self):
@@ -490,8 +499,10 @@ class WebViewFoldersPlugin(BasePlugin):
             item = param.args[0]
             if item is None or int(item.id) != MAIN_PREFS_ITEM_ID:
                 return False
+            self._log("settings item clicked")
             plugin = self._plugin_model()
             if plugin is None:
+                self._log("settings click failed: plugin model missing")
                 return False
             PluginSettingsActivity = self._class_ref("com.exteragram.messenger.plugins.ui.PluginSettingsActivity")
             Plugin = self._class_ref("com.exteragram.messenger.plugins.Plugin")
@@ -500,8 +511,10 @@ class WebViewFoldersPlugin(BasePlugin):
             settings = ctor.newInstance(plugin)
             present = BaseFragment.getMethod("presentFragment", BaseFragment)
             present.invoke(param.thisObject, settings)
+            self._log("settings activity opened")
             return True
-        except Exception:
+        except Exception as e:
+            self._log(f"settings click failed: {e}")
             return False
 
     def enable_order_reorder(self, settings_activity):
