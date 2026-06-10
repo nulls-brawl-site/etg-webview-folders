@@ -16,7 +16,7 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -104,6 +104,15 @@ class _AfterPluginSettingsCreateView(MethodHook):
         self.plugin.enable_order_reorder(param.thisObject)
 
 
+class _AfterSettingsViewReady(MethodHook):
+    def __init__(self, plugin):
+        self.plugin = plugin
+
+    def after_hooked_method(self, param):
+        self.plugin.refresh_settings_list(param.thisObject)
+        self.plugin.enable_order_reorder(param.thisObject)
+
+
 class _BeforePluginSettingsFill(MethodHook):
     def __init__(self, plugin):
         self.plugin = plugin
@@ -128,6 +137,8 @@ class WebViewFoldersPlugin(BasePlugin):
         self._last_bridge_config_json = None
         self._order_token_by_id = {}
         self._reorder_callbacks = []
+        self._reorder_view_ids = set()
+        self._order_section_id = None
         self._reorder_icon = None
         self._install_hooks()
         run_on_queue(self._load_bridge, PLUGINS_QUEUE)
@@ -251,6 +262,7 @@ class WebViewFoldersPlugin(BasePlugin):
         DialogsActivity = self._class_ref("org.telegram.ui.DialogsActivity")
         MainTabsActivity = self._class_ref("org.telegram.ui.MainTabsActivity")
         SettingsActivity = self._class_ref("org.telegram.ui.SettingsActivity")
+        BasePreferencesActivity = self._class_ref("com.exteragram.messenger.preferences.BasePreferencesActivity")
         MainPreferencesActivity = self._class_ref("com.exteragram.messenger.preferences.MainPreferencesActivity")
         PluginSettingsActivity = self._class_ref("com.exteragram.messenger.plugins.ui.PluginSettingsActivity")
         Context = self._class_ref("android.content.Context")
@@ -261,71 +273,48 @@ class WebViewFoldersPlugin(BasePlugin):
         Boolean = jclass("java.lang.Boolean")
         Integer = jclass("java.lang.Integer")
         Float = jclass("java.lang.Float")
-        try:
-            if DialogsActivity is not None and Context is not None:
-                create_view = DialogsActivity.getDeclaredMethod("createView", Context)
-                create_view.setAccessible(True)
-                self.hook_method(create_view, _AfterCreateView(self))
+        if DialogsActivity is not None and Context is not None:
+            self._hook_declared(DialogsActivity, "createView", _AfterCreateView(self), Context)
+            self._hook_declared(DialogsActivity, "updateFilterTabs", _BeforeUpdateTabs(self), Boolean.TYPE, Boolean.TYPE)
+            self._hook_declared(DialogsActivity, "updateFilterTabs", _AfterUpdateTabs(self), Boolean.TYPE, Boolean.TYPE)
+            self._hook_declared(DialogsActivity, "onFragmentDestroy", _BeforeDestroy(self))
 
-                update_tabs = DialogsActivity.getDeclaredMethod("updateFilterTabs", Boolean.TYPE, Boolean.TYPE)
-                update_tabs.setAccessible(True)
-                self.hook_method(update_tabs, _BeforeUpdateTabs(self))
-                self.hook_method(update_tabs, _AfterUpdateTabs(self))
+        if MainTabsActivity is not None and Context is not None:
+            self._hook_declared(MainTabsActivity, "createView", _AfterCreateView(self), Context)
+            self._hook_declared(MainTabsActivity, "onResume", _AfterCreateView(self))
+            Bundle = self._class_ref("android.os.Bundle")
+            if Bundle is not None:
+                self._hook_declared(MainTabsActivity, "prepareDialogsActivity", _AfterCreateView(self), Bundle)
 
-                destroy = DialogsActivity.getDeclaredMethod("onFragmentDestroy")
-                destroy.setAccessible(True)
-                self.hook_method(destroy, _BeforeDestroy(self))
+        if SettingsActivity is not None and Context is not None:
+            self._hook_declared(SettingsActivity, "createView", _AfterSettingsViewReady(self), Context)
+            self._hook_declared(SettingsActivity, "onResume", _AfterSettingsViewReady(self))
 
-            if MainTabsActivity is not None and Context is not None:
-                main_create_view = MainTabsActivity.getDeclaredMethod("createView", Context)
-                main_create_view.setAccessible(True)
-                self.hook_method(main_create_view, _AfterCreateView(self))
+        if SettingsActivity is not None and ArrayList is not None and UniversalAdapter is not None:
+            self._hook_declared(SettingsActivity, "fillItems", _AfterMainPrefsFill(self), ArrayList, UniversalAdapter)
 
-                main_resume = MainTabsActivity.getDeclaredMethod("onResume")
-                main_resume.setAccessible(True)
-                self.hook_method(main_resume, _AfterCreateView(self))
+        if SettingsActivity is not None and UItem is not None and View is not None:
+            self._hook_declared(SettingsActivity, "onClick", _BeforeMainPrefsClick(self), UItem, View, Integer.TYPE, Float.TYPE, Float.TYPE)
 
-                Bundle = self._class_ref("android.os.Bundle")
-                if Bundle is not None:
-                    prepare_dialogs = MainTabsActivity.getDeclaredMethod("prepareDialogsActivity", Bundle)
-                    prepare_dialogs.setAccessible(True)
-                    self.hook_method(prepare_dialogs, _AfterCreateView(self))
+        if BasePreferencesActivity is not None and Context is not None:
+            self._hook_declared(BasePreferencesActivity, "createView", _AfterPluginSettingsCreateView(self), Context)
+            self._hook_declared(BasePreferencesActivity, "onResume", _AfterPluginSettingsCreateView(self))
 
-            if SettingsActivity is not None and ArrayList is not None and UniversalAdapter is not None:
-                fill_items = SettingsActivity.getDeclaredMethod("fillItems", ArrayList, UniversalAdapter)
-                fill_items.setAccessible(True)
-                self.hook_method(fill_items, _AfterMainPrefsFill(self))
+        if MainPreferencesActivity is not None and Context is not None:
+            self._hook_declared(MainPreferencesActivity, "createView", _AfterSettingsViewReady(self), Context)
+            self._hook_declared(MainPreferencesActivity, "onResume", _AfterSettingsViewReady(self))
 
-            if SettingsActivity is not None and UItem is not None and View is not None:
-                on_click = SettingsActivity.getDeclaredMethod(
-                    "onClick", UItem, View, Integer.TYPE, Float.TYPE, Float.TYPE
-                )
-                on_click.setAccessible(True)
-                self.hook_method(on_click, _BeforeMainPrefsClick(self))
+        if MainPreferencesActivity is not None and ArrayList is not None and UniversalAdapter is not None:
+            self._hook_declared(MainPreferencesActivity, "fillItems", _AfterExteraPrefsFill(self), ArrayList, UniversalAdapter)
 
-            if MainPreferencesActivity is not None and ArrayList is not None and UniversalAdapter is not None:
-                extera_fill = MainPreferencesActivity.getDeclaredMethod("fillItems", ArrayList, UniversalAdapter)
-                extera_fill.setAccessible(True)
-                self.hook_method(extera_fill, _AfterExteraPrefsFill(self))
+        if MainPreferencesActivity is not None and UItem is not None and View is not None:
+            self._hook_declared(MainPreferencesActivity, "onClick", _BeforeExteraPrefsClick(self), UItem, View, Integer.TYPE, Float.TYPE, Float.TYPE)
 
-            if MainPreferencesActivity is not None and UItem is not None and View is not None:
-                extera_click = MainPreferencesActivity.getDeclaredMethod(
-                    "onClick", UItem, View, Integer.TYPE, Float.TYPE, Float.TYPE
-                )
-                extera_click.setAccessible(True)
-                self.hook_method(extera_click, _BeforeExteraPrefsClick(self))
+        if PluginSettingsActivity is not None and Context is not None:
+            self._hook_declared(PluginSettingsActivity, "createView", _AfterPluginSettingsCreateView(self), Context)
 
-            if PluginSettingsActivity is not None and Context is not None:
-                settings_create_view = PluginSettingsActivity.getDeclaredMethod("createView", Context)
-                settings_create_view.setAccessible(True)
-                self.hook_method(settings_create_view, _AfterPluginSettingsCreateView(self))
-
-            if PluginSettingsActivity is not None and ArrayList is not None and UniversalAdapter is not None:
-                settings_fill = PluginSettingsActivity.getDeclaredMethod("fillItems", ArrayList, UniversalAdapter)
-                settings_fill.setAccessible(True)
-                self.hook_method(settings_fill, _BeforePluginSettingsFill(self))
-        except Exception:
-            return
+        if PluginSettingsActivity is not None and ArrayList is not None and UniversalAdapter is not None:
+            self._hook_declared(PluginSettingsActivity, "fillItems", _BeforePluginSettingsFill(self), ArrayList, UniversalAdapter)
 
     def _load_bridge(self):
         try:
@@ -388,6 +377,23 @@ class WebViewFoldersPlugin(BasePlugin):
                 self._bridge_hide.invoke(None, fragment)
             except Exception:
                 return
+
+    def refresh_settings_list(self, fragment):
+        try:
+            if fragment is None:
+                return
+            name = str(fragment.getClass().getName())
+            if name not in (
+                "org.telegram.ui.SettingsActivity",
+                "com.exteragram.messenger.preferences.MainPreferencesActivity",
+            ):
+                return
+            list_view = self._get_field(fragment, "listView")
+            adapter = self._get_field(list_view, "adapter") if list_view is not None else None
+            if adapter is not None:
+                adapter.update(True)
+        except Exception:
+            return
 
     def restore_chrome(self):
         if self._bridge_ready and self._bridge_restore is not None:
@@ -484,9 +490,14 @@ class WebViewFoldersPlugin(BasePlugin):
             list_view = self._get_field(settings_activity, "listView")
             if list_view is None:
                 return
+            view_id = self._identity_hash(list_view)
+            if view_id is not None and view_id in self._reorder_view_ids:
+                return
             list_view.allowReorder(True)
             callback = self._make_reorder_callback()
             if callback is not None:
+                if view_id is not None:
+                    self._reorder_view_ids.add(view_id)
                 self._reorder_callbacks.append(callback)
                 if len(self._reorder_callbacks) > 8:
                     self._reorder_callbacks = self._reorder_callbacks[-8:]
@@ -524,7 +535,11 @@ class WebViewFoldersPlugin(BasePlugin):
             adapter.whiteSectionStart()
             items.add(as_header.invoke(None, ORDER_TITLE))
             if rows:
-                adapter.reorderSectionStart()
+                section_id = adapter.reorderSectionStart()
+                try:
+                    self._order_section_id = int(section_id)
+                except Exception:
+                    self._order_section_id = None
                 for row in rows:
                     items.add(row)
                 adapter.reorderSectionEnd()
@@ -634,15 +649,22 @@ class WebViewFoldersPlugin(BasePlugin):
             BaseCallback = dynamic_proxy(Callback2)
 
             class ReorderCallback(BaseCallback):
-                def run(self, _section_id, item_list):
-                    plugin._handle_order_reordered(item_list)
+                def run(self, section_id, item_list):
+                    plugin._handle_order_reordered(section_id, item_list)
 
             return ReorderCallback()
         except Exception:
             return None
 
-    def _handle_order_reordered(self, item_list):
+    def _handle_order_reordered(self, section_id, item_list):
         try:
+            try:
+                current_section_id = int(section_id)
+                if self._order_section_id is not None and current_section_id != self._order_section_id:
+                    return
+            except Exception:
+                if self._order_section_id is not None:
+                    return
             tokens = []
             for i in range(item_list.size()):
                 item = item_list.get(i)
@@ -942,6 +964,26 @@ class WebViewFoldersPlugin(BasePlugin):
         except Exception:
             return None
         return None
+
+    def _hook_declared(self, clazz, name, hook, *types):
+        try:
+            method = clazz.getDeclaredMethod(name, *types)
+            method.setAccessible(True)
+            self.hook_method(method, hook)
+            return True
+        except Exception:
+            return False
+
+    def _identity_hash(self, obj):
+        try:
+            System = jclass("java.lang.System")
+            return int(System.identityHashCode(obj))
+        except Exception:
+            pass
+        try:
+            return int(obj.hashCode())
+        except Exception:
+            return None
 
     def _drawable_id(self, drawable_class, name):
         try:
