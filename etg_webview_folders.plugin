@@ -4,7 +4,7 @@ import os
 import time
 import urllib.request
 
-from android_utils import run_on_ui_thread
+from android_utils import copy_to_clipboard, run_on_ui_thread
 from base_plugin import AppEvent, BasePlugin, MethodHook
 from client_utils import PLUGINS_QUEUE, get_last_fragment, run_on_queue
 from file_utils import ensure_dir_exists, get_plugins_dir
@@ -16,7 +16,7 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -124,6 +124,7 @@ class _BeforePluginSettingsFill(MethodHook):
 
 class WebViewFoldersPlugin(BasePlugin):
     def on_plugin_load(self):
+        self._logs = []
         self._bridge = None
         self._bridge_install = None
         self._bridge_before_update = None
@@ -140,6 +141,7 @@ class WebViewFoldersPlugin(BasePlugin):
         self._reorder_view_ids = set()
         self._order_section_id = None
         self._reorder_icon = None
+        self._log("plugin loaded")
         self._install_hooks()
         run_on_queue(self._load_bridge, PLUGINS_QUEUE)
 
@@ -190,6 +192,14 @@ class WebViewFoldersPlugin(BasePlugin):
                 icon="msg_list",
                 link_alias="webviewFoldersOrder",
                 create_sub_fragment=lambda: self._create_order_settings(),
+            ),
+            Divider(),
+            Header(text="Диагностика"),
+            Text(
+                text="Копировать логи",
+                subtext="Версия, dex, bridge, конфиг и последние события",
+                icon="msg_copy",
+                on_click=lambda _v: self._copy_logs(),
             ),
         ])
         return rows
@@ -320,6 +330,7 @@ class WebViewFoldersPlugin(BasePlugin):
         try:
             dex_path = self._ensure_dex()
             if not dex_path:
+                self._log("dex path unavailable")
                 return
             ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
             opt_dir = os.path.join(self._dex_dir(), "dex_opt")
@@ -342,13 +353,15 @@ class WebViewFoldersPlugin(BasePlugin):
             self._bridge_restore = self._bridge.getDeclaredMethod("restoreChromeAndSystemBars")
             self._bridge_restore.setAccessible(True)
             self._bridge_ready = True
+            self._log(f"dex bridge loaded from {dex_path}")
             self._sync_bridge_config(False)
             for fragment in list(self._pending_fragments):
                 self.install_tabs(fragment)
             self._pending_fragments = []
             self._schedule_current_fragment_install()
-        except Exception:
+        except Exception as e:
             self._bridge_ready = False
+            self._log(f"dex bridge load failed: {e}")
 
     def install_tabs(self, fragment):
         if fragment is None:
@@ -359,8 +372,13 @@ class WebViewFoldersPlugin(BasePlugin):
             return
         try:
             self._sync_bridge_config(False)
-            self._bridge_install.invoke(None, fragment)
-        except Exception:
+            status = self._bridge_install.invoke(None, fragment)
+            if status is not None:
+                status = str(status)
+                if "failed" in status or "not resolved" in status:
+                    self._log(status)
+        except Exception as e:
+            self._log(f"install failed: {e}")
             return
 
     def before_update_tabs(self, fragment):
@@ -368,14 +386,16 @@ class WebViewFoldersPlugin(BasePlugin):
             try:
                 self._sync_bridge_config(False)
                 self._bridge_before_update.invoke(None, fragment)
-            except Exception:
+            except Exception as e:
+                self._log(f"beforeUpdateFilterTabs failed: {e}")
                 return
 
     def hide_tabs(self, fragment):
         if self._bridge_ready and self._bridge_hide is not None and fragment is not None:
             try:
                 self._bridge_hide.invoke(None, fragment)
-            except Exception:
+            except Exception as e:
+                self._log(f"hide failed: {e}")
                 return
 
     def refresh_settings_list(self, fragment):
@@ -399,7 +419,8 @@ class WebViewFoldersPlugin(BasePlugin):
         if self._bridge_ready and self._bridge_restore is not None:
             try:
                 self._bridge_restore.invoke(None)
-            except Exception:
+            except Exception as e:
+                self._log(f"restore chrome failed: {e}")
                 return
 
     def inject_settings_item(self, param):
@@ -723,6 +744,7 @@ class WebViewFoldersPlugin(BasePlugin):
         if os.path.exists(dex_path) and os.path.getsize(dex_path) > 1024:
             if not expected_sha or self._sha256(dex_path) == expected_sha:
                 self._make_read_only(dex_path)
+                self._log(f"using cached dex at {dex_path}")
                 return dex_path
         tmp_path = dex_path + ".tmp"
         try:
@@ -731,17 +753,21 @@ class WebViewFoldersPlugin(BasePlugin):
             with urllib.request.urlopen(DEFAULT_DEX_URL, timeout=25) as response:
                 data = response.read()
             if len(data) < 1024:
+                self._log("dex download failed: response too small")
                 return None
             got_sha = hashlib.sha256(data).hexdigest()
             if expected_sha and got_sha != expected_sha:
+                self._log(f"dex sha mismatch: {got_sha}")
                 return None
             with open(tmp_path, "wb") as f:
                 f.write(data)
             self._make_read_only(tmp_path)
             os.replace(tmp_path, dex_path)
             self._make_read_only(dex_path)
+            self._log(f"dex downloaded sha256={got_sha}")
             return dex_path
-        except Exception:
+        except Exception as e:
+            self._log(f"dex download failed: {e}")
             return None
         finally:
             try:
@@ -759,9 +785,11 @@ class WebViewFoldersPlugin(BasePlugin):
             if changed:
                 self._bridge_configure.invoke(None, payload)
                 self._last_bridge_config_json = payload
+                self._log("bridge config synced")
             if reinstall and changed:
                 self._schedule_current_fragment_install()
-        except Exception:
+        except Exception as e:
+            self._log(f"bridge config sync failed: {e}")
             return
 
     def _schedule_current_fragment_install(self):
@@ -773,7 +801,8 @@ class WebViewFoldersPlugin(BasePlugin):
     def _install_current_fragment(self):
         try:
             self.install_tabs(get_last_fragment())
-        except Exception:
+        except Exception as e:
+            self._log(f"current fragment install failed: {e}")
             return
 
     def _pull_snapshot(self):
@@ -781,7 +810,8 @@ class WebViewFoldersPlugin(BasePlugin):
             if self._bridge_snapshot is not None:
                 raw = str(self._bridge_snapshot.invoke(None))
                 self._last_snapshot = json.loads(raw or '{"tabs":[]}')
-        except Exception:
+        except Exception as e:
+            self._log(f"snapshot pull failed: {e}")
             return
 
     def _snapshot(self):
@@ -971,8 +1001,78 @@ class WebViewFoldersPlugin(BasePlugin):
             method.setAccessible(True)
             self.hook_method(method, hook)
             return True
-        except Exception:
+        except Exception as e:
+            try:
+                self._log(f"hook failed: {clazz.getName()}.{name}: {e}")
+            except Exception:
+                pass
             return False
+
+    def _copy_logs(self):
+        text = self._logs_text()
+        try:
+            copy_to_clipboard(text)
+            self._log("logs copied")
+            return
+        except Exception as e:
+            self._log(f"copy_to_clipboard failed: {e}")
+        try:
+            AndroidUtilities = self._class_ref("org.telegram.messenger.AndroidUtilities")
+            CharSequence = self._class_ref("java.lang.CharSequence")
+            method = AndroidUtilities.getDeclaredMethod("addToClipboard", CharSequence)
+            method.setAccessible(True)
+            method.invoke(None, text)
+            self._log("logs copied with AndroidUtilities")
+        except Exception as e:
+            self._log(f"logs copy failed: {e}")
+
+    def _logs_text(self):
+        dex_path = os.path.join(self._dex_dir(), "etg-webview-folders-bridge.dex")
+        lines = [
+            "WebView Folders logs",
+            f"plugin_version={__version__}",
+            f"sdk_version={__sdk_version__}",
+            f"dex_url={DEFAULT_DEX_URL}",
+            f"dex_sha256={DEFAULT_DEX_SHA256}",
+            f"dex_path={dex_path}",
+            f"dex_exists={os.path.exists(dex_path)}",
+            f"bridge_ready={self._bridge_ready}",
+            f"pending_fragments={len(self._pending_fragments)}",
+        ]
+        try:
+            if os.path.exists(dex_path):
+                lines.append(f"dex_local_sha256={self._sha256(dex_path)}")
+        except Exception as e:
+            lines.append(f"dex_local_sha256_error={e}")
+        try:
+            config = self._config()
+            lines.append(f"tabs_count={len(config.get('tabs', []))}")
+            lines.append("order=" + json.dumps(config.get("order", []), ensure_ascii=False))
+            lines.append("config=" + json.dumps(config, ensure_ascii=False, separators=(",", ":")))
+        except Exception as e:
+            lines.append(f"config_error={e}")
+        try:
+            lines.append("snapshot=" + json.dumps(self._snapshot(), ensure_ascii=False, separators=(",", ":")))
+        except Exception as e:
+            lines.append(f"snapshot_error={e}")
+        logs = list(getattr(self, "_logs", []) or [])
+        if logs:
+            lines.append("")
+            lines.append("events:")
+            lines.extend(logs[-120:])
+        return "\n".join(lines)
+
+    def _log(self, message):
+        try:
+            logs = getattr(self, "_logs", None)
+            if logs is None:
+                self._logs = []
+                logs = self._logs
+            logs.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}")
+            if len(logs) > 120:
+                del logs[:-120]
+        except Exception:
+            return
 
     def _identity_hash(self, obj):
         try:
