@@ -1,0 +1,4 @@
+/build/classes/
+/build/r8.jar
+__pycache__/
+*.pyc
