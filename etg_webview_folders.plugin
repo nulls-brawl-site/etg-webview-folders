@@ -16,7 +16,7 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.7"
+__version__ = "1.0.8"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -470,7 +470,14 @@ class WebViewFoldersPlugin(BasePlugin):
                     "of", Integer.TYPE, Integer.TYPE, Integer.TYPE, Integer.TYPE, CharSequence
                 )
                 method.setAccessible(True)
-                return method.invoke(None, MAIN_PREFS_ITEM_ID, -0x17cfd0, -0x17cfd0, icon_id, title)
+                return method.invoke(
+                    None,
+                    self._jint(MAIN_PREFS_ITEM_ID),
+                    self._jint(-0x17cfd0),
+                    self._jint(-0x17cfd0),
+                    self._jint(icon_id),
+                    title,
+                )
         except Exception as e:
             self._log(f"settings factory create failed: {e}")
         return self._create_plain_uitem_button(MAIN_PREFS_ITEM_ID, "msg_language", title)
@@ -664,9 +671,9 @@ class WebViewFoldersPlugin(BasePlugin):
             CharSequence = self._class_ref("java.lang.CharSequence")
             if subtext:
                 method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence, CharSequence)
-                return method.invoke(None, int(row_id), int(icon_id), title, subtext)
+                return method.invoke(None, self._jint(row_id), self._jint(icon_id), title, subtext)
             method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
-            return method.invoke(None, int(row_id), int(icon_id), title)
+            return method.invoke(None, self._jint(row_id), self._jint(icon_id), title)
         except Exception as e:
             self._log(f"uitem asButton failed: {e}")
         try:
@@ -674,9 +681,9 @@ class WebViewFoldersPlugin(BasePlugin):
             Integer = jclass("java.lang.Integer")
             Boolean = jclass("java.lang.Boolean")
             ctor = UItem.getConstructor(Integer.TYPE, Boolean.TYPE)
-            item = ctor.newInstance(3, False)
-            self._set_field(item, "id", int(row_id))
-            self._set_field(item, "iconResId", int(icon_id))
+            item = ctor.newInstance(self._jint(3), self._jbool(False))
+            self._set_int_field(item, "id", row_id)
+            self._set_int_field(item, "iconResId", icon_id)
             self._set_field(item, "text", title)
             if subtext:
                 self._set_field(item, "textValue", subtext)
@@ -1164,6 +1171,22 @@ class WebViewFoldersPlugin(BasePlugin):
         except Exception:
             return False
         return False
+
+    def _set_int_field(self, obj, name, value):
+        try:
+            field = self._find_field(obj, name)
+            if field is not None:
+                field.setInt(obj, int(value))
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _jint(self, value):
+        return jclass("java.lang.Integer").valueOf(int(value))
+
+    def _jbool(self, value):
+        return jclass("java.lang.Boolean").valueOf(bool(value))
 
     def _make_read_only(self, path):
         try:
