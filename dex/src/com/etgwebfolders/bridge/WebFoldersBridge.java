@@ -1602,6 +1602,7 @@ public final class WebFoldersBridge {
     }
 
     public static void restoreChromeAndSystemBars() {
+        overlayGuardGeneration++;
         restoreTelegramChrome();
         restoreSystemBars();
     }
@@ -1894,7 +1895,9 @@ public final class WebFoldersBridge {
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                scheduleTelegramThemeInjection(view, root);
+                if (view != null) {
+                    view.requestFocus();
+                }
             }
         });
     }
@@ -1954,7 +1957,6 @@ public final class WebFoldersBridge {
             WebView webView = findWebView(existing);
             if (webView != null) {
                 installWebViewClient(webView, root);
-                scheduleTelegramThemeInjection(webView, root);
                 if (shouldLoadWebUrl(webView, loadUrl)) {
                     webView.loadUrl(loadUrl);
                 }
@@ -1993,7 +1995,6 @@ public final class WebFoldersBridge {
                 if (shouldLoadWebUrl(reusedWebView, loadUrl)) {
                     reusedWebView.loadUrl(loadUrl);
                 }
-                scheduleTelegramThemeInjection(reusedWebView, root);
                 return;
             }
             destroyCachedOverlay();
@@ -2064,7 +2065,6 @@ public final class WebFoldersBridge {
         if (shouldLoadWebUrl(webView, loadUrl)) {
             webView.loadUrl(loadUrl);
         }
-        scheduleTelegramThemeInjection(webView, root);
     }
 
     private static void scheduleOverlayGuard(Activity activity, ViewGroup root, View filterTabs, FrameLayout overlay, Object dialogsActivity) {
@@ -2537,16 +2537,6 @@ public final class WebFoldersBridge {
     }
 
     private static void scheduleTelegramThemeInjection(WebView webView, View anchor) {
-        if (webView == null) {
-            return;
-        }
-        try {
-            webView.post(() -> applyTelegramTheme(webView, anchor));
-            webView.postDelayed(() -> applyTelegramTheme(webView, anchor), 180);
-            webView.postDelayed(() -> applyTelegramTheme(webView, anchor), 700);
-            webView.postDelayed(() -> applyTelegramTheme(webView, anchor), 1600);
-        } catch (Throwable ignored) {
-        }
     }
 
     private static void applyTelegramTheme(WebView webView, View anchor) {
@@ -3313,21 +3303,22 @@ public final class WebFoldersBridge {
             CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
         }
         CookieManager.getInstance().setAcceptCookie(true);
+        webView.setFocusable(true);
+        webView.setFocusableInTouchMode(true);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
         });
     }
 
     private static boolean handleWebViewNavigation(WebView view, String url) {
-        String webUrl = normalizeWebUrl(url);
-        if (webUrl != null) {
-            if (!webUrl.equals(url) && view != null) {
-                view.loadUrl(webUrl);
-                return true;
-            }
+        if (url == null) {
+            return true;
+        }
+        String value = url.trim().toLowerCase();
+        if (value.startsWith("http://") || value.startsWith("https://")) {
             return false;
         }
-        return shouldBlockNavigation(url);
+        return true;
     }
 
     private static boolean shouldBlockNavigation(String url) {

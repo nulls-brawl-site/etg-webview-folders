@@ -16,14 +16,14 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
 
 ENTRY_CLASS = "com.etgwebfolders.bridge.WebFoldersBridge"
 DEFAULT_DEX_URL = "https://raw.githubusercontent.com/nulls-brawl-site/etg-webview-folders/master/build/etg-webview-folders-bridge.dex"
-DEFAULT_DEX_SHA256 = "91c89d8603915618ab36dbe2e2de7416a68b54bb26feddd20957558743a06e35"
+DEFAULT_DEX_SHA256 = "9645c0602d03943907e26df9ddd19b1e0c6dbc41458e838edcf088aaaa804ec4"
 MAIN_PREFS_ITEM_ID = 0x575646
 ORDER_ITEM_BASE_ID = 0x575700
 CONFIG_KEY = "webview_folders_config"
@@ -87,12 +87,13 @@ class _AfterPluginSettingsCreateView(MethodHook):
         self.plugin.enable_order_reorder(param.thisObject)
 
 
-class _AfterPluginSettingsFill(MethodHook):
+class _BeforePluginSettingsFill(MethodHook):
     def __init__(self, plugin):
         self.plugin = plugin
 
-    def after_hooked_method(self, param):
-        self.plugin.inject_order_reorder_section(param)
+    def before_hooked_method(self, param):
+        if self.plugin.inject_order_reorder_section(param):
+            param.setResult(None)
 
 
 class WebViewFoldersPlugin(BasePlugin):
@@ -158,6 +159,7 @@ class WebViewFoldersPlugin(BasePlugin):
                 text=ORDER_TITLE,
                 subtext="Перетаскивание как в Pill Stack",
                 icon="msg_list",
+                link_alias="webviewFoldersOrder",
                 create_sub_fragment=lambda: self._create_order_settings(),
             ),
         ])
@@ -208,14 +210,24 @@ class WebViewFoldersPlugin(BasePlugin):
         ]
 
     def _create_order_settings(self):
-        return [
-            Header(text=ORDER_TITLE),
-            Text(
-                text="Перетащи строки",
-                subtext="Если родных папок нет, открой список чатов и зайди сюда снова",
+        rows = [Header(text=ORDER_TITLE)]
+        order_items = self._order_items()
+        if order_items:
+            for index, item in enumerate(order_items):
+                rows.append(Text(
+                    text=item.get("title") or "Папка",
+                    subtext=item.get("subtext") or "",
+                    icon=item.get("icon") or "msg_folders",
+                    link_alias=f"webviewFoldersOrderRow{index}",
+                ))
+        else:
+            rows.append(Text(
+                text="Пока нечего двигать",
+                subtext="Создай WebView папку или открой список чатов",
                 icon="msg_info",
-            ),
-        ]
+                link_alias="webviewFoldersOrderEmpty",
+            ))
+        return rows
 
     def _install_hooks(self):
         DialogsActivity = self._class_ref("org.telegram.ui.DialogsActivity")
@@ -280,7 +292,7 @@ class WebViewFoldersPlugin(BasePlugin):
             if PluginSettingsActivity is not None and ArrayList is not None and UniversalAdapter is not None:
                 settings_fill = PluginSettingsActivity.getDeclaredMethod("fillItems", ArrayList, UniversalAdapter)
                 settings_fill.setAccessible(True)
-                self.hook_method(settings_fill, _AfterPluginSettingsFill(self))
+                self.hook_method(settings_fill, _BeforePluginSettingsFill(self))
         except Exception:
             return
 
@@ -429,46 +441,52 @@ class WebViewFoldersPlugin(BasePlugin):
     def inject_order_reorder_section(self, param):
         settings_activity = param.thisObject
         if not self._is_order_settings_activity(settings_activity):
-            return
+            return False
         try:
             items = param.args[0]
             adapter = param.args[1]
             if items is None or adapter is None:
-                return
+                return False
             order_items = self._order_items()
-            items.clear()
             UItem = self._class_ref("org.telegram.ui.Components.UItem")
             if UItem is None:
-                return
-            adapter.whiteSectionStart()
-            header = UItem.getMethod("asHeader", self._class_ref("java.lang.CharSequence")).invoke(None, ORDER_TITLE)
-            items.add(header)
+                return False
+            CharSequence = self._class_ref("java.lang.CharSequence")
+            as_header = UItem.getMethod("asHeader", CharSequence)
+            as_shadow = UItem.getMethod("asShadow", CharSequence)
+            rows = []
+            self._order_token_by_id = {}
             if order_items:
-                adapter.reorderSectionStart()
-                self._order_token_by_id = {}
                 for index, order_item in enumerate(order_items):
                     row_id = ORDER_ITEM_BASE_ID + index
-                    self._order_token_by_id[row_id] = order_item["token"]
                     row = self._create_order_uitem(settings_activity, row_id, order_item)
                     if row is not None:
-                        items.add(row)
+                        rows.append(row)
+                        self._order_token_by_id[row_id] = order_item["token"]
+            if not rows and order_items:
+                return False
+            adapter.whiteSectionStart()
+            items.add(as_header.invoke(None, ORDER_TITLE))
+            if rows:
+                adapter.reorderSectionStart()
+                for row in rows:
+                    items.add(row)
                 adapter.reorderSectionEnd()
                 adapter.whiteSectionEnd()
-                items.add(UItem.getMethod("asShadow", self._class_ref("java.lang.CharSequence")).invoke(
-                    None, "Перетащи строки за значок справа. Родные папки появятся после открытия списка чатов."
-                ))
+                items.add(as_shadow.invoke(None, "Перетащи строки за значок справа. Родные папки появятся после открытия списка чатов."))
             else:
                 info = self._create_basic_uitem(
                     row_id=ORDER_ITEM_BASE_ID,
                     icon_name="msg_info",
                     title="Пока нечего двигать",
-                    subtext="Создай WebView папку или открой список чатов",
+                    subtext="",
                 )
                 if info is not None:
                     items.add(info)
                 adapter.whiteSectionEnd()
+            return True
         except Exception:
-            return
+            return False
 
     def _order_items(self):
         config = self._config()
@@ -502,16 +520,26 @@ class WebViewFoldersPlugin(BasePlugin):
                     "token": token,
                     "title": item.get("title", token),
                     "subtext": "Telegram",
-                    "icon": "msg_folder",
+                    "icon": "msg_folders",
                 })
+        if not result:
+            for tab in config.get("tabs", []):
+                key = tab.get("key")
+                if key and tab.get("enabled", True):
+                    result.append({
+                        "token": f"web:{key}",
+                        "title": tab.get("title") or self._host_from_url(tab.get("url", "")),
+                        "subtext": tab.get("url", "WebView"),
+                        "icon": "msg_language",
+                    })
         return result
 
     def _create_order_uitem(self, fragment, row_id, order_item):
         item = self._create_basic_uitem(
             row_id=row_id,
-            icon_name=order_item.get("icon", "msg_folder"),
+            icon_name=order_item.get("icon", "msg_folders"),
             title=order_item.get("title", ""),
-            subtext=order_item.get("subtext", ""),
+            subtext="",
         )
         if item is None:
             return None
@@ -532,6 +560,8 @@ class WebViewFoldersPlugin(BasePlugin):
             Integer = jclass("java.lang.Integer")
             CharSequence = self._class_ref("java.lang.CharSequence")
             icon_id = self._drawable_id(RDrawable, icon_name)
+            if not icon_id:
+                icon_id = self._drawable_id(RDrawable, "msg_info")
             if subtext:
                 method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence, CharSequence)
                 return method.invoke(None, row_id, icon_id, title, subtext)
@@ -583,7 +613,26 @@ class WebViewFoldersPlugin(BasePlugin):
             return
 
     def _is_order_settings_activity(self, settings_activity):
-        return self._is_our_plugin_settings_activity(settings_activity) and str(self._get_field(settings_activity, "customTitle") or "") == ORDER_TITLE
+        if not self._is_our_plugin_settings_activity(settings_activity):
+            return False
+        title = str(self._get_field(settings_activity, "customTitle") or "")
+        if title == ORDER_TITLE:
+            return True
+        prefix = str(self._get_field(settings_activity, "settingsLinkPrefix") or "")
+        if "webviewFoldersOrder" in prefix:
+            return True
+        setting_items = self._get_field(settings_activity, "settingItems")
+        try:
+            if setting_items is not None:
+                for i in range(setting_items.size()):
+                    item = setting_items.get(i)
+                    alias = str(self._get_field(item, "linkAlias") or "")
+                    text = str(self._get_field(item, "text") or "")
+                    if alias.startswith("webviewFoldersOrder") or text == ORDER_TITLE:
+                        return True
+        except Exception:
+            pass
+        return False
 
     def _is_our_plugin_settings_activity(self, settings_activity):
         try:
