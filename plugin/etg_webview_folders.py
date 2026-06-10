@@ -16,14 +16,14 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
 
 ENTRY_CLASS = "com.etgwebfolders.bridge.WebFoldersBridge"
 DEFAULT_DEX_URL = "https://raw.githubusercontent.com/nulls-brawl-site/etg-webview-folders/master/build/etg-webview-folders-bridge.dex"
-DEFAULT_DEX_SHA256 = "9645c0602d03943907e26df9ddd19b1e0c6dbc41458e838edcf088aaaa804ec4"
+DEFAULT_DEX_SHA256 = "310393137f3d6f394e005197723077f122d1550b1ff523d82ef2b5cab19256e9"
 MAIN_PREFS_ITEM_ID = 0x575646
 ORDER_ITEM_BASE_ID = 0x575700
 CONFIG_KEY = "webview_folders_config"
@@ -79,6 +79,23 @@ class _BeforeMainPrefsClick(MethodHook):
             param.setResult(None)
 
 
+class _AfterExteraPrefsFill(MethodHook):
+    def __init__(self, plugin):
+        self.plugin = plugin
+
+    def after_hooked_method(self, param):
+        self.plugin.inject_extera_settings_item(param)
+
+
+class _BeforeExteraPrefsClick(MethodHook):
+    def __init__(self, plugin):
+        self.plugin = plugin
+
+    def before_hooked_method(self, param):
+        if self.plugin.handle_settings_click(param):
+            param.setResult(None)
+
+
 class _AfterPluginSettingsCreateView(MethodHook):
     def __init__(self, plugin):
         self.plugin = plugin
@@ -108,6 +125,7 @@ class WebViewFoldersPlugin(BasePlugin):
         self._bridge_ready = False
         self._pending_fragments = []
         self._last_snapshot = {"tabs": []}
+        self._last_bridge_config_json = None
         self._order_token_by_id = {}
         self._reorder_callbacks = []
         self._reorder_icon = None
@@ -233,6 +251,7 @@ class WebViewFoldersPlugin(BasePlugin):
         DialogsActivity = self._class_ref("org.telegram.ui.DialogsActivity")
         MainTabsActivity = self._class_ref("org.telegram.ui.MainTabsActivity")
         SettingsActivity = self._class_ref("org.telegram.ui.SettingsActivity")
+        MainPreferencesActivity = self._class_ref("com.exteragram.messenger.preferences.MainPreferencesActivity")
         PluginSettingsActivity = self._class_ref("com.exteragram.messenger.plugins.ui.PluginSettingsActivity")
         Context = self._class_ref("android.content.Context")
         ArrayList = self._class_ref("java.util.ArrayList")
@@ -283,6 +302,18 @@ class WebViewFoldersPlugin(BasePlugin):
                 )
                 on_click.setAccessible(True)
                 self.hook_method(on_click, _BeforeMainPrefsClick(self))
+
+            if MainPreferencesActivity is not None and ArrayList is not None and UniversalAdapter is not None:
+                extera_fill = MainPreferencesActivity.getDeclaredMethod("fillItems", ArrayList, UniversalAdapter)
+                extera_fill.setAccessible(True)
+                self.hook_method(extera_fill, _AfterExteraPrefsFill(self))
+
+            if MainPreferencesActivity is not None and UItem is not None and View is not None:
+                extera_click = MainPreferencesActivity.getDeclaredMethod(
+                    "onClick", UItem, View, Integer.TYPE, Float.TYPE, Float.TYPE
+                )
+                extera_click.setAccessible(True)
+                self.hook_method(extera_click, _BeforeExteraPrefsClick(self))
 
             if PluginSettingsActivity is not None and Context is not None:
                 settings_create_view = PluginSettingsActivity.getDeclaredMethod("createView", Context)
@@ -340,7 +371,6 @@ class WebViewFoldersPlugin(BasePlugin):
         try:
             self._sync_bridge_config(False)
             self._bridge_install.invoke(None, fragment)
-            self._pull_snapshot()
         except Exception:
             return
 
@@ -379,6 +409,18 @@ class WebViewFoldersPlugin(BasePlugin):
         except Exception:
             return
 
+    def inject_extera_settings_item(self, param):
+        try:
+            items = param.args[0]
+            if items is None or self._has_uitem_id(items, MAIN_PREFS_ITEM_ID):
+                return
+            item = self._create_extera_settings_uitem(param.thisObject)
+            if item is None:
+                return
+            items.add(self._find_insert_in_extera_preferences(items), item)
+        except Exception:
+            return
+
     def _create_settings_uitem(self):
         try:
             SettingsFactory = self._class_ref("org.telegram.ui.SettingsActivity$SettingCell$Factory")
@@ -395,6 +437,24 @@ class WebViewFoldersPlugin(BasePlugin):
             UItem = self._class_ref("org.telegram.ui.Components.UItem")
             as_button = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
             return as_button.invoke(None, MAIN_PREFS_ITEM_ID, icon_id, "Настройки WebView папок")
+        except Exception:
+            return None
+
+    def _create_extera_settings_uitem(self, fragment):
+        try:
+            UItem = self._class_ref("org.telegram.ui.Components.UItem")
+            RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
+            Integer = jclass("java.lang.Integer")
+            CharSequence = self._class_ref("java.lang.CharSequence")
+            icon_id = self._drawable_id(RDrawable, "msg_language") or self._drawable_id(RDrawable, "msg_settings")
+            method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
+            item = method.invoke(None, MAIN_PREFS_ITEM_ID, icon_id, "Настройки WebView папок")
+            try:
+                item.setSearchable(fragment)
+                item.setLinkAlias("webviewFolders", fragment)
+            except Exception:
+                pass
+            return item
         except Exception:
             return None
 
@@ -425,10 +485,6 @@ class WebViewFoldersPlugin(BasePlugin):
             if list_view is None:
                 return
             list_view.allowReorder(True)
-            try:
-                list_view.setReorderHandleOnly(True)
-            except Exception:
-                pass
             callback = self._make_reorder_callback()
             if callback is not None:
                 self._reorder_callbacks.append(callback)
@@ -547,10 +603,6 @@ class WebViewFoldersPlugin(BasePlugin):
         reorder_icon = self._get_reorder_icon(fragment)
         if reorder_icon is not None:
             self._set_field(item, "object2", reorder_icon)
-        try:
-            item.setReordering(True)
-        except Exception:
-            pass
         return item
 
     def _create_basic_uitem(self, row_id, icon_name, title, subtext=""):
@@ -680,8 +732,12 @@ class WebViewFoldersPlugin(BasePlugin):
         if not self._bridge_ready or self._bridge_configure is None:
             return
         try:
-            self._bridge_configure.invoke(None, self._config_json())
-            if reinstall:
+            payload = self._config_json()
+            changed = payload != self._last_bridge_config_json
+            if changed:
+                self._bridge_configure.invoke(None, payload)
+                self._last_bridge_config_json = payload
+            if reinstall and changed:
                 self._schedule_current_fragment_install()
         except Exception:
             return
@@ -836,6 +892,19 @@ class WebViewFoldersPlugin(BasePlugin):
         except Exception:
             pass
         return min(1, items.size())
+
+    def _find_insert_in_extera_preferences(self, items):
+        try:
+            for i in range(items.size()):
+                text = str(self._get_field(items.get(i), "text") or "")
+                if text in ("General", "Основные", "Общие"):
+                    return i
+        except Exception:
+            pass
+        try:
+            return min(2, items.size())
+        except Exception:
+            return 0
 
     def _plugin_model(self):
         try:

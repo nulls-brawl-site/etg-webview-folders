@@ -50,6 +50,7 @@ public final class WebFoldersBridge {
     private static final ArrayList<WebTabConfig> webTabs = new ArrayList<>();
     private static final ArrayList<Integer> tabOrder = new ArrayList<>();
     private static String lastTabsSnapshotJson = "{\"tabs\":[]}";
+    private static String lastConfigJson = "";
     private static FrameLayout cachedOverlay;
     private static WebView cachedWebView;
     private static Activity cachedOverlayActivity;
@@ -100,6 +101,10 @@ public final class WebFoldersBridge {
 
     public static synchronized void configure(String json) {
         String configJson = json != null ? json : "";
+        if (configJson.equals(lastConfigJson)) {
+            return;
+        }
+        lastConfigJson = configJson;
         webTabs.clear();
         tabOrder.clear();
         try {
@@ -449,8 +454,7 @@ public final class WebFoldersBridge {
     private static String installFilterTab(Object dialogsActivity, Activity activity, View root, View filterTabs) {
         restoreChromeIfWebInactive(root, filterTabs);
         if (areWebTabsInstalled(filterTabs) && isWrappedWebDelegate(filterTabs)) {
-            hardenWebTabVisualState(root, filterTabs, activity);
-            requestWebTabRebindIfMissing(root, filterTabs, activity);
+            hardenFilterTabsDrawState(filterTabs, activity);
             boolean overlayActive = root instanceof ViewGroup && ((ViewGroup) root).findViewWithTag(OVERLAY_TAG) != null;
             if (overlayActive) {
                 int webIndex = findTabPositionById(filterTabs, activeWebTabId);
@@ -609,7 +613,6 @@ public final class WebFoldersBridge {
             if (webCount != enabledWebTabCount() || !matchesConfiguredOrder(tabs)) {
                 return false;
             }
-            updateTabsSnapshot(tabs);
             return true;
         } catch (Throwable ignored) {
             return false;
@@ -700,18 +703,46 @@ public final class WebFoldersBridge {
         if (tabOrder.isEmpty()) {
             return true;
         }
-        ArrayList copy = new ArrayList(tabs);
-        applyTabOrder(copy);
-        if (copy.size() != tabs.size()) {
+        ArrayList<Integer> expected = expectedOrderedIds(tabs);
+        if (expected.size() != tabs.size()) {
             return false;
         }
         for (int i = 0; i < tabs.size(); i++) {
-            if (getIntField(tabs.get(i), "id", Integer.MIN_VALUE)
-                    != getIntField(copy.get(i), "id", Integer.MIN_VALUE)) {
+            if (getIntField(tabs.get(i), "id", Integer.MIN_VALUE) != expected.get(i)) {
                 return false;
             }
         }
         return true;
+    }
+
+    private static ArrayList<Integer> expectedOrderedIds(ArrayList tabs) {
+        ArrayList<Integer> expected = new ArrayList<>();
+        SparseIntArray existing = new SparseIntArray();
+        SparseIntArray used = new SparseIntArray();
+        if (tabs == null) {
+            return expected;
+        }
+        for (int i = 0; i < tabs.size(); i++) {
+            int id = getIntField(tabs.get(i), "id", Integer.MIN_VALUE);
+            if (id != Integer.MIN_VALUE) {
+                existing.put(id, 1);
+            }
+        }
+        for (int i = 0; i < tabOrder.size(); i++) {
+            int id = tabOrder.get(i);
+            if (existing.indexOfKey(id) >= 0 && used.indexOfKey(id) < 0) {
+                expected.add(id);
+                used.put(id, 1);
+            }
+        }
+        for (int i = 0; i < tabs.size(); i++) {
+            int id = getIntField(tabs.get(i), "id", Integer.MIN_VALUE);
+            if (id != Integer.MIN_VALUE && used.indexOfKey(id) < 0) {
+                expected.add(id);
+                used.put(id, 1);
+            }
+        }
+        return expected;
     }
 
     private static void updateTabsSnapshot(ArrayList tabs) {
