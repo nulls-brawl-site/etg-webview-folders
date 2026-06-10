@@ -16,7 +16,7 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -458,40 +458,36 @@ class WebViewFoldersPlugin(BasePlugin):
             return
 
     def _create_settings_uitem(self):
+        title = "Настройки WebView папок"
         try:
             SettingsFactory = self._class_ref("org.telegram.ui.SettingsActivity$SettingCell$Factory")
             RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
             Integer = jclass("java.lang.Integer")
             CharSequence = self._class_ref("java.lang.CharSequence")
-            icon_id = self._drawable_id(RDrawable, "msg_language")
+            icon_id = self._drawable_id(RDrawable, "msg_language") or self._drawable_id(RDrawable, "msg_settings")
             if SettingsFactory is not None and icon_id:
                 method = SettingsFactory.getDeclaredMethod(
                     "of", Integer.TYPE, Integer.TYPE, Integer.TYPE, Integer.TYPE, CharSequence
                 )
                 method.setAccessible(True)
-                return method.invoke(None, MAIN_PREFS_ITEM_ID, -0x17cfd0, -0x17cfd0, icon_id, "Настройки WebView папок")
-            UItem = self._class_ref("org.telegram.ui.Components.UItem")
-            as_button = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
-            return as_button.invoke(None, MAIN_PREFS_ITEM_ID, icon_id, "Настройки WebView папок")
-        except Exception:
-            return None
+                return method.invoke(None, MAIN_PREFS_ITEM_ID, -0x17cfd0, -0x17cfd0, icon_id, title)
+        except Exception as e:
+            self._log(f"settings factory create failed: {e}")
+        return self._create_plain_uitem_button(MAIN_PREFS_ITEM_ID, "msg_language", title)
 
     def _create_extera_settings_uitem(self, fragment):
         try:
-            UItem = self._class_ref("org.telegram.ui.Components.UItem")
-            RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
-            Integer = jclass("java.lang.Integer")
-            CharSequence = self._class_ref("java.lang.CharSequence")
-            icon_id = self._drawable_id(RDrawable, "msg_language") or self._drawable_id(RDrawable, "msg_settings")
-            method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
-            item = method.invoke(None, MAIN_PREFS_ITEM_ID, icon_id, "Настройки WebView папок")
+            item = self._create_plain_uitem_button(MAIN_PREFS_ITEM_ID, "msg_language", "Настройки WebView папок")
+            if item is None:
+                return None
             try:
                 item.setSearchable(fragment)
                 item.setLinkAlias("webviewFolders", fragment)
             except Exception:
                 pass
             return item
-        except Exception:
+        except Exception as e:
+            self._log(f"extera settings item create failed: {e}")
             return None
 
     def handle_settings_click(self, param):
@@ -655,20 +651,38 @@ class WebViewFoldersPlugin(BasePlugin):
         return item
 
     def _create_basic_uitem(self, row_id, icon_name, title, subtext=""):
+        return self._create_plain_uitem_button(row_id, icon_name, title, subtext)
+
+    def _create_plain_uitem_button(self, row_id, icon_name, title, subtext=""):
+        RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
+        icon_id = self._drawable_id(RDrawable, icon_name)
+        if not icon_id:
+            icon_id = self._drawable_id(RDrawable, "msg_info")
         try:
             UItem = self._class_ref("org.telegram.ui.Components.UItem")
-            RDrawable = self._class_ref("org.telegram.messenger.R$drawable")
             Integer = jclass("java.lang.Integer")
             CharSequence = self._class_ref("java.lang.CharSequence")
-            icon_id = self._drawable_id(RDrawable, icon_name)
-            if not icon_id:
-                icon_id = self._drawable_id(RDrawable, "msg_info")
             if subtext:
                 method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence, CharSequence)
-                return method.invoke(None, row_id, icon_id, title, subtext)
+                return method.invoke(None, int(row_id), int(icon_id), title, subtext)
             method = UItem.getMethod("asButton", Integer.TYPE, Integer.TYPE, CharSequence)
-            return method.invoke(None, row_id, icon_id, title)
-        except Exception:
+            return method.invoke(None, int(row_id), int(icon_id), title)
+        except Exception as e:
+            self._log(f"uitem asButton failed: {e}")
+        try:
+            UItem = self._class_ref("org.telegram.ui.Components.UItem")
+            Integer = jclass("java.lang.Integer")
+            Boolean = jclass("java.lang.Boolean")
+            ctor = UItem.getConstructor(Integer.TYPE, Boolean.TYPE)
+            item = ctor.newInstance(3, False)
+            self._set_field(item, "id", int(row_id))
+            self._set_field(item, "iconResId", int(icon_id))
+            self._set_field(item, "text", title)
+            if subtext:
+                self._set_field(item, "textValue", subtext)
+            return item
+        except Exception as e:
+            self._log(f"uitem direct create failed: {e}")
             return None
 
     def _make_reorder_callback(self):
