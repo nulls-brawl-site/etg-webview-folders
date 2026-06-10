@@ -16,7 +16,7 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.9"
+__version__ = "1.0.10"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -375,7 +375,7 @@ class WebViewFoldersPlugin(BasePlugin):
             status = self._bridge_install.invoke(None, fragment)
             if status is not None:
                 status = str(status)
-                if "failed" in status or ("not resolved" in status and "ChatActivity" not in status):
+                if self._should_log_install_status(status):
                     self._log(status)
         except Exception as e:
             self._log(f"install failed: {e}")
@@ -503,18 +503,12 @@ class WebViewFoldersPlugin(BasePlugin):
             if item is None or int(item.id) != MAIN_PREFS_ITEM_ID:
                 return False
             self._log("settings item clicked")
-            plugin = self._plugin_model()
-            if plugin is None:
-                self._log("settings click failed: plugin model missing")
-                return False
-            PluginSettingsActivity = self._class_ref("com.exteragram.messenger.plugins.ui.PluginSettingsActivity")
-            Plugin = self._class_ref("com.exteragram.messenger.plugins.Plugin")
-            BaseFragment = self._class_ref("org.telegram.ui.ActionBar.BaseFragment")
-            ctor = PluginSettingsActivity.getConstructor(Plugin)
-            settings = ctor.newInstance(plugin)
-            present = BaseFragment.getMethod("presentFragment", BaseFragment)
-            present.invoke(param.thisObject, settings)
-            self._log("settings activity opened")
+            PluginsController = self._class_ref("com.exteragram.messenger.plugins.PluginsController")
+            String = self._class_ref("java.lang.String")
+            method = PluginsController.getDeclaredMethod("openPluginSettings", String)
+            method.setAccessible(True)
+            method.invoke(None, __id__)
+            self._log("settings activity open requested")
             return True
         except Exception as e:
             self._log(f"settings click failed: {e}")
@@ -1002,6 +996,20 @@ class WebViewFoldersPlugin(BasePlugin):
             return plugins.get(__id__)
         except Exception:
             return None
+
+    def _should_log_install_status(self, status):
+        if "failed" in status:
+            return True
+        if "not resolved" not in status:
+            return False
+        quiet_fragments = (
+            "ChatActivity",
+            "SettingsActivity",
+            "MainPreferencesActivity",
+            "PluginSettingsActivity",
+            "PluginsActivity",
+        )
+        return not any(name in status for name in quiet_fragments)
 
     def _dex_dir(self):
         return os.path.join(get_plugins_dir(), __id__)
