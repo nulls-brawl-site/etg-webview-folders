@@ -8,7 +8,7 @@ from android_utils import copy_to_clipboard, run_on_ui_thread
 from base_plugin import AppEvent, BasePlugin, MethodHook
 from client_utils import PLUGINS_QUEUE, get_last_fragment, run_on_queue
 from file_utils import ensure_dir_exists, get_plugins_dir
-from java import dynamic_proxy, jclass
+from java import dynamic_proxy, jboolean, jclass, jint
 from java.lang import ClassLoader
 from ui.settings import Divider, Header, Input, Text
 
@@ -16,7 +16,7 @@ __id__ = "etg_webview_folders"
 __name__ = "WebView Folders"
 __description__ = "Adds configurable Telegram folder tabs which open websites in a sandboxed WebView."
 __author__ = "@bsod4ik_plugins"
-__version__ = "1.0.8"
+__version__ = "1.0.9"
 __icon__ = "msg_language"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -1183,10 +1183,10 @@ class WebViewFoldersPlugin(BasePlugin):
         return False
 
     def _jint(self, value):
-        return jclass("java.lang.Integer").valueOf(int(value))
+        return jint(int(value))
 
     def _jbool(self, value):
-        return jclass("java.lang.Boolean").valueOf(bool(value))
+        return jboolean(bool(value))
 
     def _make_read_only(self, path):
         try:
